@@ -45,6 +45,9 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*.pacman
+            dist/*.tar.gz
             dist/*.exe
             dist/*.dmg
             dist/*.zip

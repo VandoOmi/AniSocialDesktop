@@ -41,7 +41,10 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "rpm",
+        "pacman",
+        "tar.gz"
       ],
       "icon": "assets/icon.png",
       "category": "Network"
