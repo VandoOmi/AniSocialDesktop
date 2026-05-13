@@ -22,6 +22,11 @@
   "build": {
     "appId": "de.anisocial.desktop",
     "productName": "AniSocial",
+    "publish": {
+      "provider": "github",
+      "owner": "VandoOmi",
+      "repo": "AniSocialElectron"
+    },
     "directories": {
       "output": "dist"
     },
