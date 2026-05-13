@@ -10,7 +10,10 @@
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac"
   },
-  "author": "",
+  "author": {
+    "name": "Vando",
+    "email": "vando.02800@tutamail.com"
+  },
   "license": "MIT",
   "devDependencies": {
     "electron": "^35.7.5",
