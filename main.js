@@ -113,13 +113,13 @@ function createWindow() {
       { type: 'separator' },
       {
         label: 'Zurück',
-        enabled: mainWindow.webContents.canGoBack(),
-        click: () => mainWindow.webContents.goBack(),
+        enabled: mainWindow.webContents.navigationHistory.canGoBack(),
+        click: () => mainWindow.webContents.navigationHistory.goBack(),
       },
       {
         label: 'Vor',
-        enabled: mainWindow.webContents.canGoForward(),
-        click: () => mainWindow.webContents.goForward(),
+        enabled: mainWindow.webContents.navigationHistory.canGoForward(),
+        click: () => mainWindow.webContents.navigationHistory.goForward(),
       },
       { type: 'separator' },
       {
@@ -170,12 +170,12 @@ app.on('browser-window-created', (event, window) => {
         {
           label: 'Zurück',
           accelerator: 'Alt+Left',
-          click: () => mainWindow?.webContents.goBack(),
+          click: () => mainWindow?.webContents.navigationHistory.goBack(),
         },
         {
           label: 'Vor',
           accelerator: 'Alt+Right',
-          click: () => mainWindow?.webContents.goForward(),
+          click: () => mainWindow?.webContents.navigationHistory.goForward(),
         },
         {
           label: 'Startseite',
