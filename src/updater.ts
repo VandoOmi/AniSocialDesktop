@@ -19,7 +19,7 @@ export function initAutoUpdater(): void {
   if (!app.isPackaged) return;
 
   if (!isAutoUpdateSupported()) {
-    // For non-updatable Linux formats (.deb, .rpm, .pacman), use manual check
+    // For non-AppImage Linux targets, use manual check
     initManualUpdateCheck();
     return;
   }
