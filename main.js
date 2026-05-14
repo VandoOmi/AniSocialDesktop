@@ -1,10 +1,13 @@
-const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session, Tray, nativeImage } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const windowStateKeeper = require('electron-window-state');
 
 const TARGET_URL = 'https://anisocial.de';
 
 let mainWindow;
+let tray = null;
+let isQuitting = false;
 
 function createWindow() {
   const mainWindowState = windowStateKeeper({
@@ -39,9 +42,26 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // Update title from the webpage
+  // Minimize to tray instead of closing
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  // Update title from the webpage and extract unread count
   mainWindow.webContents.on('page-title-updated', (event, title) => {
     mainWindow.setTitle(`${title} — AniSocial`);
+
+    // Extract unread count from title format like "(3) AniSocial - Messages"
+    const match = title.match(/^\((\d+)\)/);
+    const count = match ? parseInt(match[1], 10) : 0;
+    updateUnreadBadge(count);
   });
 
   // Open external links in system browser
@@ -236,14 +256,124 @@ app.on('browser-window-created', (event, window) => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 });
 
-app.whenReady().then(createWindow);
+// --- Tray Icon Setup ---
+
+function createTray() {
+  let iconFile;
+  switch (process.platform) {
+    case 'win32':
+      iconFile = 'icon.ico';
+      break;
+    case 'darwin':
+      iconFile = fs.existsSync(path.join(__dirname, 'assets', 'iconTemplate.png')) ? 'iconTemplate.png' : 'icon.png';
+      break;
+    default:
+      iconFile = 'icon.png'; // Linux
+  }
+
+  const iconPath = path.join(__dirname, 'assets', iconFile);
+  const trayIcon = nativeImage.createFromPath(iconPath);
+
+  if (trayIcon.isEmpty()) {
+    console.error(`Tray icon not found or invalid: ${iconPath}`);
+    return;
+  }
+
+  if (process.platform === 'darwin') {
+    trayIcon.setTemplateImage(true);
+  }
+
+  tray = new Tray(trayIcon);
+  tray.setToolTip('AniSocial');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Anzeigen',
+      click: () => showWindow(),
+    },
+    { type: 'separator' },
+    {
+      label: 'Beenden',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  tray.on('click', () => showWindow());
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+// --- Unread Badge (Cross-Platform) ---
+
+function createBadgeIcon(count) {
+  const MAX_BADGE_COUNT = 99;
+
+  const text = count > MAX_BADGE_COUNT ? `${MAX_BADGE_COUNT}+` : String(count);
+  const svg = `
+    <svg width="16" height="16" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="8" cy="8" r="8" fill="#e53935"/>
+      <text x="8" y="12" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
+    </svg>`;
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  return nativeImage.createFromDataURL(dataUrl);
+}
+
+function updateUnreadBadge(count) {
+  // Tooltip on all platforms
+  if (tray) {
+    tray.setToolTip(count > 0 ? `AniSocial (${count} ungelesen)` : 'AniSocial');
+  }
+
+  // Platform-specific badge
+  if (process.platform === 'darwin') {
+    app.dock.setBadge(count > 0 ? String(count) : '');
+  } else if (process.platform === 'win32') {
+    if (mainWindow) {
+      mainWindow.setOverlayIcon(
+        count > 0 ? createBadgeIcon(count) : null,
+        count > 0 ? `${count} ungelesene Nachrichten` : '',
+      );
+    }
+  } else {
+    // Linux (Unity launcher)
+    app.setBadgeCount(count);
+  }
+}
+
+// --- App Lifecycle ---
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
+app.whenReady().then(() => {
+  createWindow();
+  createTray();
+});
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Do not quit — app stays in tray
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  // macOS: clicking dock icon should show the window
+  if (mainWindow) {
+    showWindow();
+  } else {
     createWindow();
   }
 });
