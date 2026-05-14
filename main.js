@@ -1,10 +1,12 @@
-const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session, Tray, nativeImage } = require('electron');
 const path = require('path');
 const windowStateKeeper = require('electron-window-state');
 
 const TARGET_URL = 'https://anisocial.de';
 
 let mainWindow;
+let tray = null;
+let isQuitting = false;
 
 function createWindow() {
   const mainWindowState = windowStateKeeper({
@@ -39,9 +41,21 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // Update title from the webpage
+  // Minimize to tray instead of closing
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
+  // Update title from the webpage and extract unread count
   mainWindow.webContents.on('page-title-updated', (event, title) => {
     mainWindow.setTitle(`${title} — AniSocial`);
+
+    const match = title.match(/\((\d+)\)/);
+    const count = match ? parseInt(match[1], 10) : 0;
+    updateUnreadBadge(count);
   });
 
   // Open external links in system browser
@@ -236,14 +250,98 @@ app.on('browser-window-created', (event, window) => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 });
 
-app.whenReady().then(createWindow);
+// --- Tray Icon Setup ---
+
+function createTray() {
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  const trayIcon = nativeImage.createFromPath(path.join(__dirname, 'assets', iconFile));
+
+  tray = new Tray(trayIcon.resize({ width: 16, height: 16 }));
+  tray.setToolTip('AniSocial');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Anzeigen',
+      click: () => showWindow(),
+    },
+    { type: 'separator' },
+    {
+      label: 'Beenden',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  tray.on('click', () => showWindow());
+}
+
+function showWindow() {
+  if (mainWindow) {
+    if (!mainWindow.isVisible()) mainWindow.show();
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+}
+
+// --- Unread Badge (Cross-Platform) ---
+
+function createBadgeIcon(count) {
+  const text = count > 99 ? '99+' : String(count);
+  const svg = `
+    <svg width="16" height="16" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="8" cy="8" r="8" fill="#e53935"/>
+      <text x="8" y="12" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
+    </svg>`;
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  return nativeImage.createFromDataURL(dataUrl);
+}
+
+function updateUnreadBadge(count) {
+  // Tooltip on all platforms
+  if (tray) {
+    tray.setToolTip(count > 0 ? `AniSocial (${count} ungelesen)` : 'AniSocial');
+  }
+
+  // Platform-specific badge
+  if (process.platform === 'darwin') {
+    app.dock.setBadge(count > 0 ? String(count) : '');
+  } else if (process.platform === 'win32') {
+    if (mainWindow) {
+      mainWindow.setOverlayIcon(
+        count > 0 ? createBadgeIcon(count) : null,
+        count > 0 ? `${count} ungelesene Nachrichten` : '',
+      );
+    }
+  } else {
+    // Linux (Unity launcher)
+    app.setBadgeCount(count);
+  }
+}
+
+// --- App Lifecycle ---
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
+app.whenReady().then(() => {
+  createWindow();
+  createTray();
+});
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Do not quit — app stays in tray
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  // macOS: clicking dock icon should show the window
+  if (mainWindow) {
+    showWindow();
+  } else {
     createWindow();
   }
 });
