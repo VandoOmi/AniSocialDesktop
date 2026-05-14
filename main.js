@@ -49,6 +49,10 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
   // Update title from the webpage and extract unread count
   mainWindow.webContents.on('page-title-updated', (event, title) => {
     mainWindow.setTitle(`${title} — AniSocial`);
@@ -298,11 +302,14 @@ function createTray() {
 }
 
 function showWindow() {
-  if (mainWindow) {
-    if (!mainWindow.isVisible()) mainWindow.show();
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
   }
+
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
 }
 
 // --- Unread Badge (Cross-Platform) ---
