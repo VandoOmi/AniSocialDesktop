@@ -24,6 +24,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "electron-window-state": "^5.0.3"
   },
   "build": {
@@ -32,7 +33,7 @@
     "publish": {
       "provider": "github",
       "owner": "VandoOmi",
-      "repo": "AniSocialElectron"
+      "repo": "AniSocialDesktop"
     },
     "directories": {
       "output": "release"

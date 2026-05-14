@@ -50,14 +50,16 @@ jobs:
         with:
           name: release-${{ matrix.platform }}
           path: |
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.rpm
-            dist/*.pacman
-            dist/*.tar.gz
-            dist/*.exe
-            dist/*.dmg
-            dist/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.pacman
+            release/*.tar.gz
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.yml
+            release/*.blockmap
           if-no-files-found: ignore
 
   release:
