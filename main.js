@@ -53,6 +53,7 @@ function createWindow() {
   mainWindow.webContents.on('page-title-updated', (event, title) => {
     mainWindow.setTitle(`${title} — AniSocial`);
 
+    // Extract unread count from title format like "(3) AniSocial - Messages"
     const match = title.match(/\((\d+)\)/);
     const count = match ? parseInt(match[1], 10) : 0;
     updateUnreadBadge(count);
@@ -253,10 +254,27 @@ app.on('browser-window-created', (event, window) => {
 // --- Tray Icon Setup ---
 
 function createTray() {
-  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
-  const trayIcon = nativeImage.createFromPath(path.join(__dirname, 'assets', iconFile));
+  let iconFile;
+  switch (process.platform) {
+    case 'win32':
+      iconFile = 'icon.ico';
+      break;
+    case 'darwin':
+      iconFile = 'icon.png'; // macOS: PNG works for tray; .icns is only needed for app bundle icon
+      break;
+    default:
+      iconFile = 'icon.png'; // Linux
+  }
 
-  tray = new Tray(trayIcon.resize({ width: 16, height: 16 }));
+  const iconPath = path.join(__dirname, 'assets', iconFile);
+  const trayIcon = nativeImage.createFromPath(iconPath);
+
+  if (trayIcon.isEmpty()) {
+    console.error(`Tray icon not found or invalid: ${iconPath}`);
+    return;
+  }
+
+  tray = new Tray(trayIcon);
   tray.setToolTip('AniSocial');
 
   const contextMenu = Menu.buildFromTemplate([
@@ -290,7 +308,9 @@ function showWindow() {
 // --- Unread Badge (Cross-Platform) ---
 
 function createBadgeIcon(count) {
-  const text = count > 99 ? '99+' : String(count);
+  const MAX_BADGE_COUNT = 99;
+
+  const text = count > MAX_BADGE_COUNT ? `${MAX_BADGE_COUNT}+` : String(count);
   const svg = `
     <svg width="16" height="16" xmlns="http://www.w3.org/2000/svg">
       <circle cx="8" cy="8" r="8" fill="#e53935"/>
