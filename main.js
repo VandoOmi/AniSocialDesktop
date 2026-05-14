@@ -1,10 +1,92 @@
-const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session, Tray, nativeImage } = require('electron');
 const path = require('path');
 const windowStateKeeper = require('electron-window-state');
 
 const TARGET_URL = 'https://anisocial.de';
 
+// Small 16×16 red-circle badge used as Windows taskbar overlay icon
+const BADGE_ICON_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR4nGNgoAW4o6b2HxumSDNRhhDSjNcQYjVjNYRUzRiGjBpABQMojkaqJCRiDcGrmZAhRGkmFQAAEihP1OSlKxAAAAAASUVORK5CYII=';
+
 let mainWindow;
+let tray = null;
+
+/**
+ * Extract an unread-message count from the page title.
+ * Supports patterns like "(5) Page Title" or "Page Title (5)".
+ */
+function extractUnreadCount(title) {
+  const leading = title.match(/^\((\d+)\)/);
+  if (leading) return parseInt(leading[1], 10);
+  const trailing = title.match(/\((\d+)\)\s*$/);
+  if (trailing) return parseInt(trailing[1], 10);
+  return 0;
+}
+
+/**
+ * Apply a badge count to the app icon / taskbar:
+ *   - macOS : dock badge via app.setBadgeCount()
+ *   - Linux : launcher badge via app.setBadgeCount()
+ *   - Windows: taskbar overlay icon via mainWindow.setOverlayIcon()
+ */
+function updateBadge(count) {
+  if (process.platform === 'darwin' || process.platform === 'linux') {
+    app.setBadgeCount(count);
+  }
+
+  if (process.platform === 'win32' && mainWindow) {
+    if (count > 0) {
+      const badgeImage = nativeImage.createFromDataURL(
+        `data:image/png;base64,${BADGE_ICON_BASE64}`,
+      );
+      mainWindow.setOverlayIcon(badgeImage, `${count} ungelesene Nachrichten`);
+    } else {
+      mainWindow.setOverlayIcon(null, '');
+    }
+  }
+
+  if (tray) {
+    const tooltip = count > 0
+      ? `AniSocial – ${count} ungelesene Nachricht${count === 1 ? '' : 'en'}`
+      : 'AniSocial';
+    tray.setToolTip(tooltip);
+  }
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  tray = new Tray(iconPath);
+  tray.setToolTip('AniSocial');
+
+  const buildMenu = () => Menu.buildFromTemplate([
+    {
+      label: 'Öffnen',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Beenden',
+      click: () => app.quit(),
+    },
+  ]);
+
+  tray.setContextMenu(buildMenu());
+
+  // Left-click: toggle window visibility
+  tray.on('click', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 
 function createWindow() {
   const mainWindowState = windowStateKeeper({
@@ -34,14 +116,26 @@ function createWindow() {
 
   mainWindow.loadURL(TARGET_URL);
 
+  // Initialise the system-tray icon
+  createTray();
+
   // Show window when page is ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
-  // Update title from the webpage
+  // Hide to tray instead of closing
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
+  // Update title and unread badge from the webpage
   mainWindow.webContents.on('page-title-updated', (event, title) => {
     mainWindow.setTitle(`${title} — AniSocial`);
+    updateBadge(extractUnreadCount(title));
   });
 
   // Open external links in system browser
@@ -144,11 +238,17 @@ ipcMain.on('show-notification', (event, { title, body, icon }) => {
   notification.on('click', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
     }
   });
 
   notification.show();
+});
+
+// Allow the renderer to set the badge count explicitly (e.g. from a DOM observer)
+ipcMain.on('set-badge-count', (event, count) => {
+  updateBadge(typeof count === 'number' ? count : 0);
 });
 
 // Keyboard shortcuts
@@ -238,12 +338,21 @@ app.on('browser-window-created', (event, window) => {
 
 app.whenReady().then(createWindow);
 
+app.on('before-quit', () => {
+  app.isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
+  } else if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
   }
 });

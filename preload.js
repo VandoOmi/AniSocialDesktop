@@ -32,4 +32,39 @@ window.addEventListener('DOMContentLoaded', () => {
     writable: false,
     configurable: false,
   });
+
+  // Watch the document title for unread-count patterns like "(5) Page Title"
+  // and forward the count to the main process so it can update the badge.
+  function extractCount(text) {
+    const leading = text.match(/^\((\d+)\)/);
+    if (leading) return parseInt(leading[1], 10);
+    const trailing = text.match(/\((\d+)\)\s*$/);
+    if (trailing) return parseInt(trailing[1], 10);
+    return 0;
+  }
+
+  let lastCount = 0;
+
+  function sendBadgeIfChanged() {
+    const count = extractCount(document.title);
+    if (count !== lastCount) {
+      lastCount = count;
+      ipcRenderer.send('set-badge-count', count);
+    }
+  }
+
+  // Observe <title> changes via MutationObserver on <head>
+  const titleObserver = new MutationObserver(sendBadgeIfChanged);
+  const titleEl = document.querySelector('title');
+  if (titleEl) {
+    titleObserver.observe(titleEl, { childList: true, subtree: true, characterData: true });
+  }
+  // Also observe <head> in case the <title> element is replaced
+  const headEl = document.querySelector('head');
+  if (headEl) {
+    titleObserver.observe(headEl, { childList: true });
+  }
+
+  // Send initial count
+  sendBadgeIfChanged();
 });
