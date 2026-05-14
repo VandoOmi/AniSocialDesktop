@@ -9,6 +9,7 @@ const BADGE_ICON_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQ
 
 let mainWindow;
 let tray = null;
+let isQuitting = false;
 
 /**
  * Extract an unread-message count from the page title.
@@ -126,7 +127,7 @@ function createWindow() {
 
   // Hide to tray instead of closing
   mainWindow.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -339,7 +340,7 @@ app.on('browser-window-created', (event, window) => {
 app.whenReady().then(createWindow);
 
 app.on('before-quit', () => {
-  app.isQuitting = true;
+  isQuitting = true;
 });
 
 app.on('window-all-closed', () => {

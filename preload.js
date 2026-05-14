@@ -53,7 +53,9 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Observe <title> changes via MutationObserver on <head>
+  // Observe <title> changes via MutationObserver on <head>.
+  // The observer intentionally runs for the entire window lifetime — disconnecting
+  // it would stop badge updates, and the preload context is torn down with the window.
   const titleObserver = new MutationObserver(sendBadgeIfChanged);
   const titleEl = document.querySelector('title');
   if (titleEl) {
