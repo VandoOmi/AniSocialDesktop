@@ -4,6 +4,8 @@ import * as path from 'path';
 
 import { APP_CONFIG } from './types/config';
 
+let updateInterval: ReturnType<typeof setInterval> | null = null;
+
 /** Whether the current Linux build supports auto-update (AppImage only) */
 function isAutoUpdateSupported(): boolean {
   if (process.platform === 'win32' || process.platform === 'darwin') return true;
@@ -45,9 +47,13 @@ export function initAutoUpdater(): void {
 
   // Check for updates immediately, then periodically
   autoUpdater.checkForUpdates();
-  setInterval(() => {
+  updateInterval = setInterval(() => {
     autoUpdater.checkForUpdates();
   }, APP_CONFIG.UPDATE_INTERVAL_MS);
+
+  app.on('will-quit', () => {
+    if (updateInterval) clearInterval(updateInterval);
+  });
 }
 
 /** For Linux formats without auto-update: check for new version and show notification with link */
@@ -73,9 +79,13 @@ function initManualUpdateCheck(): void {
   });
 
   autoUpdater.checkForUpdates();
-  setInterval(() => {
+  updateInterval = setInterval(() => {
     autoUpdater.checkForUpdates();
   }, APP_CONFIG.UPDATE_INTERVAL_MS);
+
+  app.on('will-quit', () => {
+    if (updateInterval) clearInterval(updateInterval);
+  });
 }
 
 function showUpdateNotification(title: string, body: string): void {
@@ -86,8 +96,12 @@ function showUpdateNotification(title: string, body: string): void {
   });
 
   notification.on('click', () => {
-    const win = BrowserWindow.getFocusedWindow();
-    if (win) win.focus();
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (!win.isVisible()) win.show();
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
   });
 
   notification.show();
