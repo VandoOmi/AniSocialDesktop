@@ -24,6 +24,8 @@ import { initAutoUpdater } from './updater';
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let unreadCount = 0;
+let originalTrayIcon: NativeImage | null = null;
 
 // --- Window Creation ---
 
@@ -55,9 +57,138 @@ function createWindow(): void {
 
   mainWindow.loadURL(APP_CONFIG.TARGET_URL);
 
+  // Grant notification and push permissions so the web app can activate them
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const allowed = ['notifications', 'push'];
+    callback(allowed.includes(permission));
+  });
+
+  mainWindow.webContents.session.setPermissionCheckHandler((_webContents, permission) => {
+    const allowed = ['notifications', 'push'];
+    return allowed.includes(permission);
+  });
+
   // Show window when page is ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Inject PushManager mock + API intercept into main world before page scripts run
+  // (contextIsolation prevents preload prototype patches from reaching the page)
+  // Since Electron has no push service, we mock both the PushManager AND intercept
+  // the backend API calls for subscribe/unsubscribe so the toggle works seamlessly.
+  const pushMockScript = `
+    (function() {
+      if (typeof PushManager === 'undefined') return;
+
+      var mockSub = {
+        endpoint: 'https://fcm.googleapis.com/fcm/send/electron-desktop-mock',
+        expirationTime: null,
+        options: { applicationServerKey: null, userVisibleOnly: true },
+        getKey: function() { return null; },
+        toJSON: function() { return { endpoint: 'https://fcm.googleapis.com/fcm/send/electron-desktop-mock', keys: { p256dh: '', auth: '' } }; },
+        unsubscribe: function() { return Promise.resolve(true); }
+      };
+
+      PushManager.prototype.subscribe = function() { return Promise.resolve(mockSub); };
+      PushManager.prototype.getSubscription = function() { return Promise.resolve(null); };
+      PushManager.prototype.permissionState = function() { return Promise.resolve('granted'); };
+
+      // Intercept XHR calls to push subscribe/unsubscribe API endpoints
+      var origXHROpen = XMLHttpRequest.prototype.open;
+      var origXHRSend = XMLHttpRequest.prototype.send;
+      var pushUrlPattern = /\\/api\\/v1\\/notifications\\/push\\/(subscribe|unsubscribe)/;
+
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this._isPushMock = pushUrlPattern.test(String(url));
+        if (!this._isPushMock) {
+          return origXHROpen.apply(this, arguments);
+        }
+        // Store but don't actually open
+        this._mockMethod = method;
+        this._mockUrl = url;
+        return origXHROpen.apply(this, arguments);
+      };
+
+      XMLHttpRequest.prototype.send = function(body) {
+        if (this._isPushMock) {
+          // Fake a successful response
+          var self = this;
+          setTimeout(function() {
+            Object.defineProperty(self, 'status', { get: function() { return 200; } });
+            Object.defineProperty(self, 'readyState', { get: function() { return 4; } });
+            Object.defineProperty(self, 'responseText', { get: function() { return JSON.stringify({ success: true }); } });
+            Object.defineProperty(self, 'response', { get: function() { return JSON.stringify({ success: true }); } });
+            if (self.onreadystatechange) self.onreadystatechange(new Event('readystatechange'));
+            if (self.onload) self.onload(new ProgressEvent('load'));
+            self.dispatchEvent(new Event('load'));
+            self.dispatchEvent(new Event('loadend'));
+          }, 10);
+          return;
+        }
+        return origXHRSend.apply(this, arguments);
+      };
+
+      // Also intercept fetch for the same endpoints
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (pushUrlPattern.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        }
+        return origFetch.apply(this, arguments);
+      };
+
+      // --- DOM-based notification observer ---
+      // Poll the notification badge counter on anisocial.de and fire native
+      // notifications when the count increases after initial page load.
+      var lastNotifCount = -1; // -1 = not yet initialized
+      var badgeSelector = 'span.bg-accent-primary.rounded-full';
+      var notifCooldown = false;
+
+      function checkBadge() {
+        var badge = document.querySelector(badgeSelector);
+        var count = badge ? parseInt(badge.textContent || '0', 10) : 0;
+        if (isNaN(count)) count = 0;
+
+        if (lastNotifCount === -1) {
+          // First read: just store the initial count, don't notify
+          lastNotifCount = count;
+          return;
+        }
+
+        // Ignore drops (React re-renders briefly remove the badge element)
+        if (count < lastNotifCount) return;
+
+        if (count > lastNotifCount && !notifCooldown) {
+          var diff = count - lastNotifCount;
+          var title = 'AniSocial';
+          var body = diff === 1
+            ? 'Du hast eine neue Benachrichtigung'
+            : 'Du hast ' + diff + ' neue Benachrichtigungen';
+          new Notification(title, { body: body });
+          lastNotifCount = count;
+
+          // Cooldown: no more notifications for 10 seconds
+          notifCooldown = true;
+          setTimeout(function() { notifCooldown = false; }, 10000);
+        }
+      }
+
+      // Start polling after page settles
+      setTimeout(function() {
+        checkBadge(); // Initial read
+        setInterval(checkBadge, 5000); // Check every 5 seconds
+      }, 5000);
+    })();
+  `;
+
+  // did-start-navigation fires before any page JS executes
+  mainWindow.webContents.on('did-start-navigation', () => {
+    mainWindow?.webContents.executeJavaScript(pushMockScript).catch(() => {});
   });
 
   // Minimize to tray instead of closing
@@ -70,6 +201,12 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // Reset badge when window is focused (user has seen notifications)
+  mainWindow.on('focus', () => {
+    unreadCount = 0;
+    updateUnreadBadge(0);
   });
 
   // Update title from the webpage and extract unread count
@@ -185,6 +322,14 @@ ipcMain.on(IPC_CHANNELS.SHOW_NOTIFICATION, (_event, payload: NotificationPayload
   });
 
   notification.show();
+});
+
+ipcMain.on(IPC_CHANNELS.UPDATE_BADGE, () => {
+  // Only increment if window is not focused
+  if (mainWindow && !mainWindow.isFocused()) {
+    unreadCount++;
+    updateUnreadBadge(unreadCount);
+  }
 });
 
 // --- Application Menu ---
@@ -303,6 +448,7 @@ function createTray(): void {
   }
 
   tray = new Tray(trayIcon);
+  originalTrayIcon = trayIcon;
   tray.setToolTip(APP_CONFIG.APP_NAME);
 
   const contextMenu = Menu.buildFromTemplate([
@@ -369,9 +515,35 @@ function updateUnreadBadge(count: number): void {
       );
     }
   } else {
-    // Linux (Unity launcher)
+    // Linux (Unity launcher — works on KDE/Unity)
     app.setBadgeCount(count);
+
+    // Tray icon overlay for Linux DEs without badge support
+    if (tray) {
+      if (count > 0) {
+        tray.setImage(createTrayBadgeIcon(count));
+      } else if (originalTrayIcon) {
+        tray.setImage(originalTrayIcon);
+      }
+    }
   }
+}
+
+function createTrayBadgeIcon(count: number): NativeImage {
+  const text = count > APP_CONFIG.MAX_BADGE_COUNT
+    ? `${APP_CONFIG.MAX_BADGE_COUNT}+`
+    : String(count);
+
+  // 22x22 tray icon with badge overlay (red circle in top-right)
+  const svg = `
+    <svg width="22" height="22" xmlns="http://www.w3.org/2000/svg">
+      <image href="data:image/png;base64," width="22" height="22" opacity="0"/>
+      <circle cx="15" cy="7" r="7" fill="#e53935"/>
+      <text x="15" y="10" text-anchor="middle" font-size="9" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
+    </svg>`;
+
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  return nativeImage.createFromDataURL(dataUrl);
 }
 
 // --- App Lifecycle ---
