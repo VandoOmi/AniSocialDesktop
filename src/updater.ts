@@ -5,6 +5,26 @@ import * as path from 'path';
 import { APP_CONFIG } from './types/config';
 
 let updateInterval: ReturnType<typeof setInterval> | null = null;
+let hasWillQuitHandler = false;
+
+function clearUpdatePolling(): void {
+  if (!updateInterval) return;
+  clearInterval(updateInterval);
+  updateInterval = null;
+}
+
+function startUpdatePolling(): void {
+  clearUpdatePolling();
+  autoUpdater.checkForUpdates();
+  updateInterval = setInterval(() => {
+    autoUpdater.checkForUpdates();
+  }, APP_CONFIG.UPDATE_INTERVAL_MS);
+
+  if (!hasWillQuitHandler) {
+    app.on('will-quit', clearUpdatePolling);
+    hasWillQuitHandler = true;
+  }
+}
 
 /** Whether the current Linux build supports auto-update (AppImage only) */
 function isAutoUpdateSupported(): boolean {
@@ -46,14 +66,7 @@ export function initAutoUpdater(): void {
   });
 
   // Check for updates immediately, then periodically
-  autoUpdater.checkForUpdates();
-  updateInterval = setInterval(() => {
-    autoUpdater.checkForUpdates();
-  }, APP_CONFIG.UPDATE_INTERVAL_MS);
-
-  app.on('will-quit', () => {
-    if (updateInterval) clearInterval(updateInterval);
-  });
+  startUpdatePolling();
 }
 
 /** For Linux formats without auto-update: check for new version and show notification with link */
@@ -78,14 +91,7 @@ function initManualUpdateCheck(): void {
     console.error('Update-check error:', error.message);
   });
 
-  autoUpdater.checkForUpdates();
-  updateInterval = setInterval(() => {
-    autoUpdater.checkForUpdates();
-  }, APP_CONFIG.UPDATE_INTERVAL_MS);
-
-  app.on('will-quit', () => {
-    if (updateInterval) clearInterval(updateInterval);
-  });
+  startUpdatePolling();
 }
 
 function showUpdateNotification(title: string, body: string): void {
