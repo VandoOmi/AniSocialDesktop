@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session, Tray, nativeImage } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const windowStateKeeper = require('electron-window-state');
 
 const TARGET_URL = 'https://anisocial.de';
@@ -264,7 +265,7 @@ function createTray() {
       iconFile = 'icon.ico';
       break;
     case 'darwin':
-      iconFile = 'icon.png'; // macOS: PNG works for tray; .icns is only needed for app bundle icon
+      iconFile = fs.existsSync(path.join(__dirname, 'assets', 'iconTemplate.png')) ? 'iconTemplate.png' : 'icon.png';
       break;
     default:
       iconFile = 'icon.png'; // Linux
@@ -276,6 +277,10 @@ function createTray() {
   if (trayIcon.isEmpty()) {
     console.error(`Tray icon not found or invalid: ${iconPath}`);
     return;
+  }
+
+  if (process.platform === 'darwin') {
+    trayIcon.setTemplateImage(true);
   }
 
   tray = new Tray(trayIcon);
