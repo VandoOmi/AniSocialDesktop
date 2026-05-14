@@ -17,6 +17,7 @@ import windowStateKeeper from 'electron-window-state';
 
 import { APP_CONFIG, TRAY_ICONS, type Platform } from './types/config';
 import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
+import { initAutoUpdater } from './updater';
 
 // --- State ---
 
@@ -382,6 +383,7 @@ app.on('before-quit', () => {
 app.whenReady().then(() => {
   createWindow();
   createTray();
+  initAutoUpdater();
 });
 
 app.on('window-all-closed', () => {

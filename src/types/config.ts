@@ -6,6 +6,8 @@ export const APP_CONFIG = {
   TARGET_URL: 'https://anisocial.de',
   APP_NAME: 'AniSocial',
   MAX_BADGE_COUNT: 99,
+  UPDATE_INTERVAL_MS: 4 * 60 * 60 * 1000, // 4 hours
+  RELEASES_URL: 'https://github.com/VandoOmi/AniSocialDesktop/releases',
   WINDOW: {
     DEFAULT_WIDTH: 1280,
     DEFAULT_HEIGHT: 800,
