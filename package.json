@@ -1,14 +1,17 @@
 {
   "name": "anisocial-desktop",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Desktop-App für AniSocial.de – Die Anime-Community",
-  "main": "main.js",
+  "main": "dist/main.js",
   "scripts": {
+    "compile": "tsc",
+    "prestart": "tsc",
     "start": "electron .",
-    "build": "electron-builder",
-    "build:linux": "electron-builder --linux",
-    "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac"
+    "dev": "tsc && electron .",
+    "build": "tsc && electron-builder",
+    "build:linux": "tsc && electron-builder --linux",
+    "build:win": "tsc && electron-builder --win",
+    "build:mac": "tsc && electron-builder --mac"
   },
   "author": {
     "name": "Vando",
@@ -17,7 +20,8 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^35.7.5",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "electron-window-state": "^5.0.3"
@@ -31,11 +35,10 @@
       "repo": "AniSocialElectron"
     },
     "directories": {
-      "output": "dist"
+      "output": "release"
     },
     "files": [
-      "main.js",
-      "preload.js",
+      "dist/**",
       "assets/**"
     ],
     "linux": {

@@ -1,18 +1,35 @@
-const { app, BrowserWindow, shell, Menu, Notification, ipcMain, session, Tray, nativeImage } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const windowStateKeeper = require('electron-window-state');
+import {
+  app,
+  BrowserWindow,
+  shell,
+  Menu,
+  Notification,
+  ipcMain,
+  Tray,
+  nativeImage,
+  clipboard,
+  type MenuItemConstructorOptions,
+  type NativeImage,
+} from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import windowStateKeeper from 'electron-window-state';
 
-const TARGET_URL = 'https://anisocial.de';
+import { APP_CONFIG, TRAY_ICONS, type Platform } from './types/config';
+import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
 
-let mainWindow;
-let tray = null;
+// --- State ---
+
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let isQuitting = false;
 
-function createWindow() {
+// --- Window Creation ---
+
+function createWindow(): void {
   const mainWindowState = windowStateKeeper({
-    defaultWidth: 1280,
-    defaultHeight: 800,
+    defaultWidth: APP_CONFIG.WINDOW.DEFAULT_WIDTH,
+    defaultHeight: APP_CONFIG.WINDOW.DEFAULT_HEIGHT,
   });
 
   mainWindow = new BrowserWindow({
@@ -20,9 +37,9 @@ function createWindow() {
     y: mainWindowState.y,
     width: mainWindowState.width,
     height: mainWindowState.height,
-    minWidth: 400,
-    minHeight: 600,
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    minWidth: APP_CONFIG.WINDOW.MIN_WIDTH,
+    minHeight: APP_CONFIG.WINDOW.MIN_HEIGHT,
+    icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -35,18 +52,18 @@ function createWindow() {
 
   mainWindowState.manage(mainWindow);
 
-  mainWindow.loadURL(TARGET_URL);
+  mainWindow.loadURL(APP_CONFIG.TARGET_URL);
 
   // Show window when page is ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    mainWindow?.show();
   });
 
   // Minimize to tray instead of closing
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
-      mainWindow.hide();
+      mainWindow?.hide();
     }
   });
 
@@ -55,8 +72,8 @@ function createWindow() {
   });
 
   // Update title from the webpage and extract unread count
-  mainWindow.webContents.on('page-title-updated', (event, title) => {
-    mainWindow.setTitle(`${title} — AniSocial`);
+  mainWindow.webContents.on('page-title-updated', (_event, title) => {
+    mainWindow?.setTitle(`${title} — ${APP_CONFIG.APP_NAME}`);
 
     // Extract unread count from title format like "(3) AniSocial - Messages"
     const match = title.match(/^\((\d+)\)/);
@@ -66,7 +83,7 @@ function createWindow() {
 
   // Open external links in system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(TARGET_URL)) {
+    if (!url.startsWith(APP_CONFIG.TARGET_URL)) {
       shell.openExternal(url);
       return { action: 'deny' };
     }
@@ -75,15 +92,15 @@ function createWindow() {
 
   // Also catch navigation to external URLs
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(TARGET_URL)) {
+    if (!url.startsWith(APP_CONFIG.TARGET_URL)) {
       event.preventDefault();
       shell.openExternal(url);
     }
   });
 
   // Context menu
-  mainWindow.webContents.on('context-menu', (event, params) => {
-    const menuItems = [];
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const menuItems: MenuItemConstructorOptions[] = [];
 
     if (params.isEditable) {
       menuItems.push(
@@ -111,10 +128,7 @@ function createWindow() {
         },
         {
           label: 'Link kopieren',
-          click: () => {
-            const { clipboard } = require('electron');
-            clipboard.writeText(params.linkURL);
-          },
+          click: () => clipboard.writeText(params.linkURL),
         },
       );
     }
@@ -133,18 +147,18 @@ function createWindow() {
       { type: 'separator' },
       {
         label: 'Zurück',
-        enabled: mainWindow.webContents.navigationHistory.canGoBack(),
-        click: () => mainWindow.webContents.navigationHistory.goBack(),
+        enabled: mainWindow?.webContents.navigationHistory.canGoBack() ?? false,
+        click: () => mainWindow?.webContents.navigationHistory.goBack(),
       },
       {
         label: 'Vor',
-        enabled: mainWindow.webContents.navigationHistory.canGoForward(),
-        click: () => mainWindow.webContents.navigationHistory.goForward(),
+        enabled: mainWindow?.webContents.navigationHistory.canGoForward() ?? false,
+        click: () => mainWindow?.webContents.navigationHistory.goForward(),
       },
       { type: 'separator' },
       {
         label: 'Neu laden',
-        click: () => mainWindow.webContents.reload(),
+        click: () => mainWindow?.webContents.reload(),
       },
     );
 
@@ -153,12 +167,13 @@ function createWindow() {
   });
 }
 
-// Handle notifications from preload
-ipcMain.on('show-notification', (event, { title, body, icon }) => {
+// --- IPC Handlers ---
+
+ipcMain.on(IPC_CHANNELS.SHOW_NOTIFICATION, (_event, payload: NotificationPayload) => {
   const notification = new Notification({
-    title: title || 'AniSocial',
-    body: body || '',
-    icon: icon || path.join(__dirname, 'assets', 'icon.png'),
+    title: payload.title || APP_CONFIG.APP_NAME,
+    body: payload.body || '',
+    icon: payload.icon || path.join(__dirname, '..', 'assets', 'icon.png'),
   });
 
   notification.on('click', () => {
@@ -171,9 +186,10 @@ ipcMain.on('show-notification', (event, { title, body, icon }) => {
   notification.show();
 });
 
-// Keyboard shortcuts
-app.on('browser-window-created', (event, window) => {
-  const template = [
+// --- Application Menu ---
+
+app.on('browser-window-created', () => {
+  const template: MenuItemConstructorOptions[] = [
     {
       label: 'Navigation',
       submenu: [
@@ -200,7 +216,7 @@ app.on('browser-window-created', (event, window) => {
         {
           label: 'Startseite',
           accelerator: 'CmdOrCtrl+H',
-          click: () => mainWindow?.loadURL(TARGET_URL),
+          click: () => mainWindow?.loadURL(APP_CONFIG.TARGET_URL),
         },
         { type: 'separator' },
         {
@@ -258,20 +274,22 @@ app.on('browser-window-created', (event, window) => {
 
 // --- Tray Icon Setup ---
 
-function createTray() {
-  let iconFile;
-  switch (process.platform) {
-    case 'win32':
-      iconFile = 'icon.ico';
-      break;
-    case 'darwin':
-      iconFile = fs.existsSync(path.join(__dirname, 'assets', 'iconTemplate.png')) ? 'iconTemplate.png' : 'icon.png';
-      break;
-    default:
-      iconFile = 'icon.png'; // Linux
+function getTrayIconFile(): string {
+  const platform = process.platform as Platform;
+
+  if (platform === 'darwin') {
+    const templatePath = path.join(__dirname, '..', 'assets', 'iconTemplate.png');
+    if (fs.existsSync(templatePath)) {
+      return 'iconTemplate.png';
+    }
   }
 
-  const iconPath = path.join(__dirname, 'assets', iconFile);
+  return TRAY_ICONS[platform] ?? TRAY_ICONS.linux;
+}
+
+function createTray(): void {
+  const iconFile = getTrayIconFile();
+  const iconPath = path.join(__dirname, '..', 'assets', iconFile);
   const trayIcon = nativeImage.createFromPath(iconPath);
 
   if (trayIcon.isEmpty()) {
@@ -284,7 +302,7 @@ function createTray() {
   }
 
   tray = new Tray(trayIcon);
-  tray.setToolTip('AniSocial');
+  tray.setToolTip(APP_CONFIG.APP_NAME);
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -302,11 +320,10 @@ function createTray() {
   ]);
 
   tray.setContextMenu(contextMenu);
-
   tray.on('click', () => showWindow());
 }
 
-function showWindow() {
+function showWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
     return;
@@ -319,28 +336,30 @@ function showWindow() {
 
 // --- Unread Badge (Cross-Platform) ---
 
-function createBadgeIcon(count) {
-  const MAX_BADGE_COUNT = 99;
+function createBadgeIcon(count: number): NativeImage {
+  const text = count > APP_CONFIG.MAX_BADGE_COUNT
+    ? `${APP_CONFIG.MAX_BADGE_COUNT}+`
+    : String(count);
 
-  const text = count > MAX_BADGE_COUNT ? `${MAX_BADGE_COUNT}+` : String(count);
   const svg = `
     <svg width="16" height="16" xmlns="http://www.w3.org/2000/svg">
       <circle cx="8" cy="8" r="8" fill="#e53935"/>
       <text x="8" y="12" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
     </svg>`;
+
   const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
   return nativeImage.createFromDataURL(dataUrl);
 }
 
-function updateUnreadBadge(count) {
+function updateUnreadBadge(count: number): void {
   // Tooltip on all platforms
   if (tray) {
-    tray.setToolTip(count > 0 ? `AniSocial (${count} ungelesen)` : 'AniSocial');
+    tray.setToolTip(count > 0 ? `${APP_CONFIG.APP_NAME} (${count} ungelesen)` : APP_CONFIG.APP_NAME);
   }
 
   // Platform-specific badge
   if (process.platform === 'darwin') {
-    app.dock.setBadge(count > 0 ? String(count) : '');
+    app.dock?.setBadge(count > 0 ? String(count) : '');
   } else if (process.platform === 'win32') {
     if (mainWindow) {
       mainWindow.setOverlayIcon(
