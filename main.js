@@ -54,7 +54,7 @@ function createWindow() {
     mainWindow.setTitle(`${title} — AniSocial`);
 
     // Extract unread count from title format like "(3) AniSocial - Messages"
-    const match = title.match(/\((\d+)\)/);
+    const match = title.match(/^\((\d+)\)/);
     const count = match ? parseInt(match[1], 10) : 0;
     updateUnreadBadge(count);
   });
