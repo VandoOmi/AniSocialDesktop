@@ -12,12 +12,12 @@ import {
   type NativeImage,
 } from 'electron';
 import * as path from 'path';
-import * as fs from 'fs';
 import windowStateKeeper from 'electron-window-state';
 
 import { APP_CONFIG, TRAY_ICONS, type Platform } from './types/config';
 import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
 import { initAutoUpdater } from './updater';
+import { initNotifications } from './push';
 
 // --- State ---
 
@@ -73,20 +73,72 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
-  // Inject PushManager mock + API intercept into main world before page scripts run
+  // Inject PushManager mock + Notification override into main world before page scripts run
   // (contextIsolation prevents preload prototype patches from reaching the page)
-  // Since Electron has no push service, we mock both the PushManager AND intercept
-  // the backend API calls for subscribe/unsubscribe so the toggle works seamlessly.
-  const pushMockScript = `
+  // Mocks PushManager so the push toggle in the site works without errors.
+  // Actual notifications come from API polling in the main process.
+  function getNotificationMockScript(): string {
+    return `
+    (function() {
+      // --- Notification Override ---
+      function NotificationOverride(title, options) {
+        options = options || {};
+        window.postMessage({
+          type: '__electron_notification__',
+          title: title,
+          body: options.body || '',
+          icon: options.icon || undefined,
+        }, '*');
+        this.title = title;
+        this.body = options.body || '';
+        this.onclick = null;
+        this.onclose = null;
+        this.onerror = null;
+        this.close = function() {};
+      }
+      NotificationOverride.permission = 'granted';
+      NotificationOverride.requestPermission = function(cb) {
+        if (cb) cb('granted');
+        return Promise.resolve('granted');
+      };
+      Object.defineProperty(window, 'Notification', {
+        value: NotificationOverride,
+        writable: false,
+        configurable: false,
+      });
+    })();
+    `;
+  }
+
+  function getPushMockScript(): string {
+    return `
     (function() {
       if (typeof PushManager === 'undefined') return;
 
+      var endpoint = 'https://electron-desktop.local/push-mock';
+      var p256dh = '';
+      var auth = '';
+
       var mockSub = {
-        endpoint: 'https://fcm.googleapis.com/fcm/send/electron-desktop-mock',
+        endpoint: endpoint,
         expirationTime: null,
         options: { applicationServerKey: null, userVisibleOnly: true },
-        getKey: function() { return null; },
-        toJSON: function() { return { endpoint: 'https://fcm.googleapis.com/fcm/send/electron-desktop-mock', keys: { p256dh: '', auth: '' } }; },
+        getKey: function(name) {
+          if (name === 'p256dh' && p256dh) {
+            var raw = atob(p256dh.replace(/-/g, '+').replace(/_/g, '/'));
+            var arr = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+            return arr.buffer;
+          }
+          if (name === 'auth' && auth) {
+            var raw = atob(auth.replace(/-/g, '+').replace(/_/g, '/'));
+            var arr = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+            return arr.buffer;
+          }
+          return null;
+        },
+        toJSON: function() { return { endpoint: endpoint, keys: { p256dh: p256dh, auth: auth } }; },
         unsubscribe: function() { return Promise.resolve(true); }
       };
 
@@ -104,7 +156,6 @@ function createWindow(): void {
         if (!this._isPushMock) {
           return origXHROpen.apply(this, arguments);
         }
-        // Store but don't actually open
         this._mockMethod = method;
         this._mockUrl = url;
         return origXHROpen.apply(this, arguments);
@@ -112,7 +163,6 @@ function createWindow(): void {
 
       XMLHttpRequest.prototype.send = function(body) {
         if (this._isPushMock) {
-          // Fake a successful response
           var self = this;
           setTimeout(function() {
             Object.defineProperty(self, 'status', { get: function() { return 200; } });
@@ -141,54 +191,28 @@ function createWindow(): void {
         }
         return origFetch.apply(this, arguments);
       };
-
-      // --- DOM-based notification observer ---
-      // Poll the notification badge counter on anisocial.de and fire native
-      // notifications when the count increases after initial page load.
-      var lastNotifCount = -1; // -1 = not yet initialized
-      var badgeSelector = 'span.bg-accent-primary.rounded-full';
-      var notifCooldown = false;
-
-      function checkBadge() {
-        var badge = document.querySelector(badgeSelector);
-        var count = badge ? parseInt(badge.textContent || '0', 10) : 0;
-        if (isNaN(count)) count = 0;
-
-        if (lastNotifCount === -1) {
-          // First read: just store the initial count, don't notify
-          lastNotifCount = count;
-          return;
-        }
-
-        // Ignore drops (React re-renders briefly remove the badge element)
-        if (count < lastNotifCount) return;
-
-        if (count > lastNotifCount && !notifCooldown) {
-          var diff = count - lastNotifCount;
-          var title = 'AniSocial';
-          var body = diff === 1
-            ? 'Du hast eine neue Benachrichtigung'
-            : 'Du hast ' + diff + ' neue Benachrichtigungen';
-          new Notification(title, { body: body });
-          lastNotifCount = count;
-
-          // Cooldown: no more notifications for 10 seconds
-          notifCooldown = true;
-          setTimeout(function() { notifCooldown = false; }, 10000);
-        }
-      }
-
-      // Start polling after page settles
-      setTimeout(function() {
-        checkBadge(); // Initial read
-        setInterval(checkBadge, 5000); // Check every 5 seconds
-      }, 5000);
     })();
-  `;
+    `;
+  }
 
   // did-start-navigation fires before any page JS executes
   mainWindow.webContents.on('did-start-navigation', () => {
-    mainWindow?.webContents.executeJavaScript(pushMockScript).catch(() => {});
+    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch((e) => {
+      console.error('[NotificationMock] Injection failed on did-start-navigation:', e);
+    });
+    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
+      console.error('[PushMock] Injection failed on did-start-navigation:', e);
+    });
+  });
+
+  // Fallback: also inject on dom-ready in case did-start-navigation was too early
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch((e) => {
+      console.error('[NotificationMock] Injection failed on dom-ready:', e);
+    });
+    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
+      console.error('[PushMock] Injection failed on dom-ready:', e);
+    });
   });
 
   // Minimize to tray instead of closing
@@ -422,14 +446,6 @@ app.on('browser-window-created', () => {
 
 function getTrayIconFile(): string {
   const platform = process.platform as Platform;
-
-  if (platform === 'darwin') {
-    const templatePath = path.join(__dirname, '..', 'assets', 'iconTemplate.png');
-    if (fs.existsSync(templatePath)) {
-      return 'iconTemplate.png';
-    }
-  }
-
   return TRAY_ICONS[platform] ?? TRAY_ICONS.linux;
 }
 
@@ -537,7 +553,7 @@ function createTrayBadgeIcon(count: number): NativeImage {
   // 22x22 tray icon with badge overlay (red circle in top-right)
   const svg = `
     <svg width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-      <image href="data:image/png;base64," width="22" height="22" opacity="0"/>
+      <rect width="22" height="22" fill="none"/>
       <circle cx="15" cy="7" r="7" fill="#e53935"/>
       <text x="15" y="10" text-anchor="middle" font-size="9" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
     </svg>`;
@@ -556,6 +572,34 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   initAutoUpdater();
+
+  // Start notification polling (with WebSocket upgrade when available)
+  initNotifications((title, body, badgeCount) => {
+    // If title is empty, it's just a badge update (initial poll)
+    if (title) {
+      const notification = new Notification({
+        title,
+        body,
+        icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+      });
+
+      notification.on('click', () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+
+      notification.show();
+    }
+
+    // Update badge
+    if (badgeCount > 0) {
+      unreadCount = badgeCount;
+      updateUnreadBadge(unreadCount);
+    }
+  });
 });
 
 app.on('window-all-closed', () => {

@@ -1,6 +1,6 @@
 # Maintainer: Vando <vando.02800@tutamail.com>
 pkgname=anisocial-desktop-bin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Desktop-App für AniSocial.de – Die Anime-Community"
 arch=('x86_64')
