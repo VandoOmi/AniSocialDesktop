@@ -12,18 +12,20 @@ import {
   type NativeImage,
 } from 'electron';
 import * as path from 'path';
-import * as fs from 'fs';
 import windowStateKeeper from 'electron-window-state';
 
 import { APP_CONFIG, TRAY_ICONS, type Platform } from './types/config';
 import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
 import { initAutoUpdater } from './updater';
+import { initNotifications } from './push';
 
 // --- State ---
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let unreadCount = 0;
+let originalTrayIcon: NativeImage | null = null;
 
 // --- Window Creation ---
 
@@ -55,9 +57,162 @@ function createWindow(): void {
 
   mainWindow.loadURL(APP_CONFIG.TARGET_URL);
 
+  // Grant notification and push permissions so the web app can activate them
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const allowed = ['notifications', 'push'];
+    callback(allowed.includes(permission));
+  });
+
+  mainWindow.webContents.session.setPermissionCheckHandler((_webContents, permission) => {
+    const allowed = ['notifications', 'push'];
+    return allowed.includes(permission);
+  });
+
   // Show window when page is ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Inject PushManager mock + Notification override into main world before page scripts run
+  // (contextIsolation prevents preload prototype patches from reaching the page)
+  // Mocks PushManager so the push toggle in the site works without errors.
+  // Actual notifications come from API polling in the main process.
+  function getNotificationMockScript(): string {
+    return `
+    (function() {
+      // --- Notification Override ---
+      function NotificationOverride(title, options) {
+        options = options || {};
+        window.postMessage({
+          type: '__electron_notification__',
+          title: title,
+          body: options.body || '',
+          icon: options.icon || undefined,
+        }, '*');
+        this.title = title;
+        this.body = options.body || '';
+        this.onclick = null;
+        this.onclose = null;
+        this.onerror = null;
+        this.close = function() {};
+      }
+      NotificationOverride.permission = 'granted';
+      NotificationOverride.requestPermission = function(cb) {
+        if (cb) cb('granted');
+        return Promise.resolve('granted');
+      };
+      Object.defineProperty(window, 'Notification', {
+        value: NotificationOverride,
+        writable: false,
+        configurable: false,
+      });
+    })();
+    `;
+  }
+
+  function getPushMockScript(): string {
+    return `
+    (function() {
+      if (typeof PushManager === 'undefined') return;
+
+      var endpoint = 'https://electron-desktop.local/push-mock';
+      var p256dh = '';
+      var auth = '';
+
+      var mockSub = {
+        endpoint: endpoint,
+        expirationTime: null,
+        options: { applicationServerKey: null, userVisibleOnly: true },
+        getKey: function(name) {
+          if (name === 'p256dh' && p256dh) {
+            var raw = atob(p256dh.replace(/-/g, '+').replace(/_/g, '/'));
+            var arr = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+            return arr.buffer;
+          }
+          if (name === 'auth' && auth) {
+            var raw = atob(auth.replace(/-/g, '+').replace(/_/g, '/'));
+            var arr = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+            return arr.buffer;
+          }
+          return null;
+        },
+        toJSON: function() { return { endpoint: endpoint, keys: { p256dh: p256dh, auth: auth } }; },
+        unsubscribe: function() { return Promise.resolve(true); }
+      };
+
+      PushManager.prototype.subscribe = function() { return Promise.resolve(mockSub); };
+      PushManager.prototype.getSubscription = function() { return Promise.resolve(null); };
+      PushManager.prototype.permissionState = function() { return Promise.resolve('granted'); };
+
+      // Intercept XHR calls to push subscribe/unsubscribe API endpoints
+      var origXHROpen = XMLHttpRequest.prototype.open;
+      var origXHRSend = XMLHttpRequest.prototype.send;
+      var pushUrlPattern = /\\/api\\/v1\\/notifications\\/push\\/(subscribe|unsubscribe)/;
+
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this._isPushMock = pushUrlPattern.test(String(url));
+        if (!this._isPushMock) {
+          return origXHROpen.apply(this, arguments);
+        }
+        this._mockMethod = method;
+        this._mockUrl = url;
+        return origXHROpen.apply(this, arguments);
+      };
+
+      XMLHttpRequest.prototype.send = function(body) {
+        if (this._isPushMock) {
+          var self = this;
+          setTimeout(function() {
+            Object.defineProperty(self, 'status', { get: function() { return 200; } });
+            Object.defineProperty(self, 'readyState', { get: function() { return 4; } });
+            Object.defineProperty(self, 'responseText', { get: function() { return JSON.stringify({ success: true }); } });
+            Object.defineProperty(self, 'response', { get: function() { return JSON.stringify({ success: true }); } });
+            if (self.onreadystatechange) self.onreadystatechange(new Event('readystatechange'));
+            if (self.onload) self.onload(new ProgressEvent('load'));
+            self.dispatchEvent(new Event('load'));
+            self.dispatchEvent(new Event('loadend'));
+          }, 10);
+          return;
+        }
+        return origXHRSend.apply(this, arguments);
+      };
+
+      // Also intercept fetch for the same endpoints
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (pushUrlPattern.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        }
+        return origFetch.apply(this, arguments);
+      };
+    })();
+    `;
+  }
+
+  // did-start-navigation fires before any page JS executes
+  mainWindow.webContents.on('did-start-navigation', () => {
+    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch((e) => {
+      console.error('[NotificationMock] Injection failed on did-start-navigation:', e);
+    });
+    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
+      console.error('[PushMock] Injection failed on did-start-navigation:', e);
+    });
+  });
+
+  // Fallback: also inject on dom-ready in case did-start-navigation was too early
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch((e) => {
+      console.error('[NotificationMock] Injection failed on dom-ready:', e);
+    });
+    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
+      console.error('[PushMock] Injection failed on dom-ready:', e);
+    });
   });
 
   // Minimize to tray instead of closing
@@ -70,6 +225,12 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // Reset badge when window is focused (user has seen notifications)
+  mainWindow.on('focus', () => {
+    unreadCount = 0;
+    updateUnreadBadge(0);
   });
 
   // Update title from the webpage and extract unread count
@@ -187,6 +348,14 @@ ipcMain.on(IPC_CHANNELS.SHOW_NOTIFICATION, (_event, payload: NotificationPayload
   notification.show();
 });
 
+ipcMain.on(IPC_CHANNELS.UPDATE_BADGE, () => {
+  // Only increment if window is not focused
+  if (mainWindow && !mainWindow.isFocused()) {
+    unreadCount++;
+    updateUnreadBadge(unreadCount);
+  }
+});
+
 // --- Application Menu ---
 
 app.on('browser-window-created', () => {
@@ -277,14 +446,6 @@ app.on('browser-window-created', () => {
 
 function getTrayIconFile(): string {
   const platform = process.platform as Platform;
-
-  if (platform === 'darwin') {
-    const templatePath = path.join(__dirname, '..', 'assets', 'iconTemplate.png');
-    if (fs.existsSync(templatePath)) {
-      return 'iconTemplate.png';
-    }
-  }
-
   return TRAY_ICONS[platform] ?? TRAY_ICONS.linux;
 }
 
@@ -303,6 +464,7 @@ function createTray(): void {
   }
 
   tray = new Tray(trayIcon);
+  originalTrayIcon = trayIcon;
   tray.setToolTip(APP_CONFIG.APP_NAME);
 
   const contextMenu = Menu.buildFromTemplate([
@@ -369,9 +531,35 @@ function updateUnreadBadge(count: number): void {
       );
     }
   } else {
-    // Linux (Unity launcher)
+    // Linux (Unity launcher — works on KDE/Unity)
     app.setBadgeCount(count);
+
+    // Tray icon overlay for Linux DEs without badge support
+    if (tray) {
+      if (count > 0) {
+        tray.setImage(createTrayBadgeIcon(count));
+      } else if (originalTrayIcon) {
+        tray.setImage(originalTrayIcon);
+      }
+    }
   }
+}
+
+function createTrayBadgeIcon(count: number): NativeImage {
+  const text = count > APP_CONFIG.MAX_BADGE_COUNT
+    ? `${APP_CONFIG.MAX_BADGE_COUNT}+`
+    : String(count);
+
+  // 22x22 tray icon with badge overlay (red circle in top-right)
+  const svg = `
+    <svg width="22" height="22" xmlns="http://www.w3.org/2000/svg">
+      <rect width="22" height="22" fill="none"/>
+      <circle cx="15" cy="7" r="7" fill="#e53935"/>
+      <text x="15" y="10" text-anchor="middle" font-size="9" font-family="Arial, sans-serif" font-weight="bold" fill="white">${text}</text>
+    </svg>`;
+
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  return nativeImage.createFromDataURL(dataUrl);
 }
 
 // --- App Lifecycle ---
@@ -384,6 +572,34 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   initAutoUpdater();
+
+  // Start notification polling (with WebSocket upgrade when available)
+  initNotifications((title, body, badgeCount) => {
+    // If title is empty, it's just a badge update (initial poll)
+    if (title) {
+      const notification = new Notification({
+        title,
+        body,
+        icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+      });
+
+      notification.on('click', () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+
+      notification.show();
+    }
+
+    // Update badge
+    if (badgeCount > 0) {
+      unreadCount = badgeCount;
+      updateUnreadBadge(unreadCount);
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
