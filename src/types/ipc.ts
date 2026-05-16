@@ -2,6 +2,8 @@
 export const IPC_CHANNELS = {
   SHOW_NOTIFICATION: 'show-notification',
   UPDATE_BADGE: 'update-badge',
+  SETTINGS_GET_ALL: 'settings:get-all',
+  SETTINGS_SET: 'settings:set',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
