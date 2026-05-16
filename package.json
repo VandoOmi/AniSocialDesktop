@@ -1,6 +1,6 @@
 {
   "name": "anisocial-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Desktop-App für AniSocial.de – Die Anime-Community",
   "main": "dist/main.js",
   "scripts": {
