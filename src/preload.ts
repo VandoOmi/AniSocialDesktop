@@ -6,6 +6,9 @@ const IPC_CHANNELS = {
   UPDATE_BADGE: 'update-badge',
   SETTINGS_GET_ALL: 'settings:get-all',
   SETTINGS_SET: 'settings:set',
+  KEYBINDS_GET_ACTIONS: 'keybinds:get-actions',
+  KEYBINDS_RECORDING_START: 'keybinds:recording-start',
+  KEYBINDS_RECORDING_STOP: 'keybinds:recording-stop',
 } as const;
 
 // Listen for notification requests from the main world (injected via executeJavaScript).
@@ -37,5 +40,22 @@ window.addEventListener('message', (event) => {
     }).then((result) => {
       window.postMessage({ type: '__electron_settings_updated__', ...result }, '*');
     });
+  }
+
+  // Keybinds: get all actions with effective accelerators
+  if (event.data.type === '__electron_keybinds_get__') {
+    ipcRenderer.invoke(IPC_CHANNELS.KEYBINDS_GET_ACTIONS).then((actions) => {
+      window.postMessage({ type: '__electron_keybinds_data__', actions }, '*');
+    });
+  }
+
+  // Keybinds: start recording (disables menu accelerators)
+  if (event.data.type === '__electron_keybinds_recording_start__') {
+    ipcRenderer.send(IPC_CHANNELS.KEYBINDS_RECORDING_START);
+  }
+
+  // Keybinds: stop recording (re-enables menu accelerators)
+  if (event.data.type === '__electron_keybinds_recording_stop__') {
+    ipcRenderer.send(IPC_CHANNELS.KEYBINDS_RECORDING_STOP);
   }
 });

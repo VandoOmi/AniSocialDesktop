@@ -19,8 +19,9 @@ import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
 import { initAutoUpdater } from './updater';
 import { initNotifications, restartPolling } from './push';
 import { initSettingsIpc } from './settings/ipc';
-import { getSetting, onSettingChanged } from './settings/store';
+import { getSetting, setSetting, onSettingChanged } from './settings/store';
 import { getSettingsInjectionScript } from './settings-inject';
+import { getEffectiveAccelerator } from './keybinds';
 
 // --- State ---
 
@@ -225,6 +226,53 @@ function createWindow(): void {
     }
   });
 
+  // Intercept ALL keyboard input during keybind recording
+  // before-input-event fires before Chromium processes the key
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!isRecordingKeybind) return;
+    if (input.type !== 'keyDown') return;
+
+    // Allow standalone modifier presses (user is still composing)
+    const key = input.key;
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return;
+
+    // Let Escape/Delete/Backspace through to the renderer for cancel/remove
+    if (key === 'Escape' || key === 'Delete' || key === 'Backspace') return;
+
+    // Build accelerator parts
+    const parts: string[] = [];
+    if (input.control || input.meta) parts.push('CmdOrCtrl');
+    if (input.alt) parts.push('Alt');
+    if (input.shift) parts.push('Shift');
+
+    // Map key to Electron accelerator format
+    let mappedKey = key;
+    const keyMap: Record<string, string> = {
+      'ArrowLeft': 'Left', 'ArrowRight': 'Right', 'ArrowUp': 'Up', 'ArrowDown': 'Down',
+      ' ': 'Space', 'Enter': 'Return', '+': 'Plus', 'Tab': 'Tab',
+    };
+    if (keyMap[key]) {
+      mappedKey = keyMap[key];
+    } else if (key.length === 1) {
+      mappedKey = key.toUpperCase();
+    }
+
+    // F-keys allowed without modifier, others require at least one
+    const isFKey = /^F\d{1,2}$/.test(mappedKey);
+    if (!isFKey && parts.length === 0) return;
+
+    // Only prevent default for valid combinations we actually capture
+    event.preventDefault();
+
+    parts.push(mappedKey);
+    const accelerator = parts.join('+');
+
+    // Send captured key to renderer via executeJavaScript
+    mainWindow?.webContents.executeJavaScript(
+      `window.postMessage({ type: '__electron_keybind_captured__', accelerator: ${JSON.stringify(accelerator)} }, '*');`
+    ).catch(() => {});
+  });
+
   // Minimize to tray instead of closing (respects closeToTray setting)
   mainWindow.on('close', (event) => {
     if (!isQuitting && getSetting('general.closeToTray')) {
@@ -369,53 +417,107 @@ ipcMain.on(IPC_CHANNELS.UPDATE_BADGE, () => {
   }
 });
 
+// --- Keybind Recording ---
+// Captures ALL key input at Electron level (before Chromium handles it)
+let isRecordingKeybind = false;
+
+ipcMain.on(IPC_CHANNELS.KEYBINDS_RECORDING_START, () => {
+  isRecordingKeybind = true;
+  Menu.setApplicationMenu(null);
+});
+
+ipcMain.on(IPC_CHANNELS.KEYBINDS_RECORDING_STOP, () => {
+  isRecordingKeybind = false;
+  buildApplicationMenu();
+});
+
 // --- Application Menu ---
 
-app.on('browser-window-created', () => {
+function buildApplicationMenu(): void {
+  const quickNavItems: MenuItemConstructorOptions[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const slotPath = getSetting(`quicknav.slot${i}.path` as keyof import('./types/settings').SettingsSchema) as string;
+    const slotLabel = getSetting(`quicknav.slot${i}.label` as keyof import('./types/settings').SettingsSchema) as string;
+    const accelerator = getEffectiveAccelerator(`quicknav.slot${i}`);
+
+    if (slotPath) {
+      // Slot is assigned — navigate to it
+      quickNavItems.push({
+        label: slotLabel || `Slot ${i}: ${slotPath}`,
+        accelerator,
+        click: () => mainWindow?.loadURL(APP_CONFIG.TARGET_URL + slotPath),
+      });
+    } else {
+      // Slot is empty — assign current page to it
+      quickNavItems.push({
+        label: `Slot ${i}: (aktuelle Seite zuweisen)`,
+        accelerator,
+        click: () => {
+          if (!mainWindow) return;
+          try {
+            const currentUrl = mainWindow.webContents.getURL();
+            const url = new URL(currentUrl);
+            const pagePath = url.pathname;
+            setSetting(`quicknav.slot${i}.path` as keyof import('./types/settings').SettingsSchema, pagePath as any);
+            setSetting(`quicknav.slot${i}.label` as keyof import('./types/settings').SettingsSchema, '' as any);
+
+            const notification = new Notification({
+              title: APP_CONFIG.APP_NAME,
+              body: `„${pagePath}" wurde als Quick-Nav Slot ${i} gespeichert.`,
+              icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+              silent: true,
+            });
+            notification.show();
+          } catch { /* ignore invalid URLs */ }
+        },
+      });
+    }
+  }
+
   const template: MenuItemConstructorOptions[] = [
     {
       label: 'Navigation',
       submenu: [
         {
           label: 'Neu laden',
-          accelerator: 'CmdOrCtrl+R',
+          accelerator: getEffectiveAccelerator('nav.reload'),
           click: () => mainWindow?.webContents.reload(),
         },
         {
           label: 'Hard Reload',
-          accelerator: 'CmdOrCtrl+Shift+R',
+          accelerator: getEffectiveAccelerator('nav.hardReload'),
           click: () => mainWindow?.webContents.reloadIgnoringCache(),
         },
         {
           label: 'Zurück',
-          accelerator: 'Alt+Left',
+          accelerator: getEffectiveAccelerator('nav.back'),
           click: () => mainWindow?.webContents.navigationHistory.goBack(),
         },
         {
           label: 'Vor',
-          accelerator: 'Alt+Right',
+          accelerator: getEffectiveAccelerator('nav.forward'),
           click: () => mainWindow?.webContents.navigationHistory.goForward(),
         },
         {
           label: 'Startseite',
-          accelerator: 'CmdOrCtrl+H',
+          accelerator: getEffectiveAccelerator('nav.home'),
           click: () => mainWindow?.loadURL(APP_CONFIG.TARGET_URL),
         },
         { type: 'separator' },
         {
           label: 'Vollbild',
-          accelerator: 'F11',
+          accelerator: getEffectiveAccelerator('nav.fullscreen'),
           click: () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()),
         },
         {
           label: 'DevTools',
-          accelerator: 'F12',
+          accelerator: getEffectiveAccelerator('nav.devtools'),
           click: () => mainWindow?.webContents.toggleDevTools(),
         },
         { type: 'separator' },
         {
           label: 'Zoom +',
-          accelerator: 'CmdOrCtrl+=',
+          accelerator: getEffectiveAccelerator('nav.zoomIn'),
           click: () => {
             const zoom = mainWindow?.webContents.getZoomLevel() ?? 0;
             mainWindow?.webContents.setZoomLevel(zoom + 0.5);
@@ -423,7 +525,7 @@ app.on('browser-window-created', () => {
         },
         {
           label: 'Zoom -',
-          accelerator: 'CmdOrCtrl+-',
+          accelerator: getEffectiveAccelerator('nav.zoomOut'),
           click: () => {
             const zoom = mainWindow?.webContents.getZoomLevel() ?? 0;
             mainWindow?.webContents.setZoomLevel(zoom - 0.5);
@@ -431,11 +533,12 @@ app.on('browser-window-created', () => {
         },
         {
           label: 'Zoom zurücksetzen',
-          accelerator: 'CmdOrCtrl+0',
+          accelerator: getEffectiveAccelerator('nav.zoomReset'),
           click: () => mainWindow?.webContents.setZoomLevel(0),
         },
         { type: 'separator' },
-        { role: 'quit', label: 'Beenden' },
+        ...(quickNavItems.length > 0 ? [...quickNavItems, { type: 'separator' as const }] : []),
+        { role: 'quit' as const, label: 'Beenden' },
       ],
     },
     {
@@ -453,6 +556,10 @@ app.on('browser-window-created', () => {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+app.on('browser-window-created', () => {
+  buildApplicationMenu();
 });
 
 // --- Tray Icon Setup ---
@@ -607,6 +714,13 @@ app.whenReady().then(() => {
   onSettingChanged('notifications.pollingIntervalSec', () => {
     restartPolling();
   });
+
+  // Rebuild menu when keybinds or quick-nav slots change
+  onSettingChanged('keybinds.overrides', () => buildApplicationMenu());
+  for (let i = 1; i <= 5; i++) {
+    onSettingChanged(`quicknav.slot${i}.path` as keyof import('./types/settings').SettingsSchema, () => buildApplicationMenu());
+    onSettingChanged(`quicknav.slot${i}.label` as keyof import('./types/settings').SettingsSchema, () => buildApplicationMenu());
+  }
 
   // Start notification polling (with WebSocket upgrade when available)
   initNotifications((title, body, badgeCount) => {

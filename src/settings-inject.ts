@@ -1,4 +1,5 @@
 import { SETTINGS_DEFAULTS } from './types/settings';
+import { KEYBIND_ACTIONS } from './keybinds';
 
 /**
  * Settings injection script for the AniSocial /settings page.
@@ -7,6 +8,7 @@ import { SETTINGS_DEFAULTS } from './types/settings';
  */
 export function getSettingsInjectionScript(): string {
   const defaultsJson = JSON.stringify(SETTINGS_DEFAULTS);
+  const keybindActionsJson = JSON.stringify(KEYBIND_ACTIONS);
 
   return `
 (function() {
@@ -61,6 +63,18 @@ export function getSettingsInjectionScript(): string {
       ]
     }
   ];
+
+  // --- Quick-Nav Slots (rendered separately) ---
+  var QUICKNAV_SLOTS = [
+    { pathKey: 'quicknav.slot1.path', labelKey: 'quicknav.slot1.label', slot: 1 },
+    { pathKey: 'quicknav.slot2.path', labelKey: 'quicknav.slot2.label', slot: 2 },
+    { pathKey: 'quicknav.slot3.path', labelKey: 'quicknav.slot3.label', slot: 3 },
+    { pathKey: 'quicknav.slot4.path', labelKey: 'quicknav.slot4.label', slot: 4 },
+    { pathKey: 'quicknav.slot5.path', labelKey: 'quicknav.slot5.label', slot: 5 },
+  ];
+
+  // --- Keybind Actions (from main process) ---
+  var KEYBIND_ACTIONS_DATA = ${keybindActionsJson};
 
   // --- SVG Icon (Lucide "monitor") ---
   var MONITOR_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-monitor md:w-[18px] md:h-[18px]" aria-hidden="true"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg>';
@@ -210,6 +224,56 @@ export function getSettingsInjectionScript(): string {
       html += '</div>';
     });
 
+    // --- Quick-Navigation Section ---
+    html += '<div class="bg-bg-elevated rounded-md border border-line p-4 sm:p-6">';
+    html += '<h2 class="text-base sm:text-xl font-semibold text-text-primary mb-4 flex items-start sm:items-center gap-2 min-w-0">';
+    html += '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z"></path><path d="m3 9 2.45-4.9A2 2 0 0 1 7.24 3h9.52a2 2 0 0 1 1.8 1.1L21 9"></path><path d="M12 3v6"></path></svg>';
+    html += '<span lang="de" class="min-w-0 hyphens-auto">Quick-Navigation</span>';
+    html += '</h2>';
+    html += '<p class="text-sm text-text-secondary mb-4">Belege bis zu 5 Slots mit beliebigen Seiten-Pfaden. Nutze die Tastenkürzel (Standard: Strg+1 bis Strg+5) um schnell dorthin zu navigieren.</p>';
+    html += '<div class="space-y-3">';
+
+    QUICKNAV_SLOTS.forEach(function(slot) {
+      var pathVal = currentSettings[slot.pathKey] || '';
+      var labelVal = currentSettings[slot.labelKey] || '';
+      html += '<div class="flex flex-col sm:flex-row gap-2 p-3 bg-bg-surface rounded-md border border-white/[0.04]">';
+      html += '<div class="flex items-center gap-2 flex-shrink-0 w-16"><span class="text-text-secondary text-sm font-medium">Slot ' + slot.slot + '</span></div>';
+      html += '<input type="text" data-quicknav-label="' + slot.labelKey + '" value="' + escapeAttr(labelVal) + '" placeholder="Label" class="flex-1 min-w-0 px-3 py-1.5 rounded-md border border-line bg-bg-elevated text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary/30">';
+      html += '<input type="text" data-quicknav-path="' + slot.pathKey + '" value="' + escapeAttr(pathVal) + '" placeholder="/notifications" class="flex-1 min-w-0 px-3 py-1.5 rounded-md border border-line bg-bg-elevated text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary/30">';
+      html += '</div>';
+    });
+
+    html += '</div>';
+    html += '</div>';
+
+    // --- Tastenkürzel Section ---
+    html += '<div class="bg-bg-elevated rounded-md border border-line p-4 sm:p-6">';
+    html += '<h2 class="text-base sm:text-xl font-semibold text-text-primary mb-4 flex items-start sm:items-center gap-2 min-w-0">';
+    html += '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8h.01"></path><path d="M12 12h.01"></path><path d="M14 8h.01"></path><path d="M16 12h.01"></path><path d="M18 8h.01"></path><path d="M6 8h.01"></path><path d="M7 16h10"></path><path d="M8 12h.01"></path><rect width="20" height="16" x="2" y="4" rx="2"></rect></svg>';
+    html += '<span lang="de" class="min-w-0 hyphens-auto">Tastenkürzel</span>';
+    html += '</h2>';
+    html += '<p class="text-sm text-text-secondary mb-4">Klicke auf ein Tastenkürzel um es neu zu belegen. Drücke Escape zum Abbrechen oder Entf/Backspace zum Entfernen. Einzelne Buchstaben ohne Modifier (Strg/Alt/Shift) sind nicht erlaubt.</p>';
+    html += '<div class="space-y-2">';
+
+    var overrides = currentSettings['keybinds.overrides'] || {};
+    KEYBIND_ACTIONS_DATA.forEach(function(action) {
+      var effective = overrides[action.id] || action.defaultAccelerator;
+      var isOverridden = !!overrides[action.id];
+      html += '<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 bg-bg-surface rounded-md border border-white/[0.04]">';
+      html += '<div class="min-w-0"><span class="text-text-primary text-sm font-medium">' + action.label + '</span>';
+      html += '<span class="text-xs text-text-secondary ml-2">(' + (action.category === 'quicknav' ? 'Quick-Nav' : 'Navigation') + ')</span></div>';
+      html += '<div class="flex items-center gap-2 flex-shrink-0">';
+      html += '<button type="button" data-keybind-action="' + action.id + '" class="keybind-btn px-3 py-1.5 rounded-md border border-line bg-bg-elevated text-text-primary text-sm font-mono cursor-pointer hover:border-accent-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/30 transition-colors min-w-[120px] text-center">' + formatAccelerator(effective) + '</button>';
+      if (isOverridden) {
+        html += '<button type="button" data-keybind-reset="' + action.id + '" class="text-xs text-text-secondary hover:text-accent-primary cursor-pointer transition-colors" title="Zurücksetzen">↺</button>';
+      }
+      html += '</div>';
+      html += '</div>';
+    });
+
+    html += '</div>';
+    html += '</div>';
+
     // Version info
     html += '<div class="text-center text-xs text-text-secondary py-2">AniSocial Desktop</div>';
 
@@ -240,6 +304,103 @@ export function getSettingsInjectionScript(): string {
     return SETTINGS_DEFAULTS[key];
   }
 
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function formatAccelerator(accel) {
+    if (!accel) return '<span class="text-text-secondary italic">Nicht belegt</span>';
+    return accel
+      .replace(/CmdOrCtrl/g, 'Strg')
+      .replace(/Ctrl/g, 'Strg')
+      .replace(/Shift/g, '⇧')
+      .replace(/Alt/g, 'Alt')
+      .replace(/Left/g, '←')
+      .replace(/Right/g, '→')
+      .replace(/Up/g, '↑')
+      .replace(/Down/g, '↓')
+      .replace(/\\+/g, ' + ');
+  }
+
+  // Active keybind recording state
+  var recordingActionId = null;
+  var recordingBtn = null;
+
+  function stopRecording() {
+    if (recordingBtn) {
+      var overrides = currentSettings['keybinds.overrides'] || {};
+      var action = KEYBIND_ACTIONS_DATA.find(function(a) { return a.id === recordingActionId; });
+      var effective = (overrides[recordingActionId] || (action ? action.defaultAccelerator : ''));
+      recordingBtn.innerHTML = formatAccelerator(effective);
+      recordingBtn.classList.remove('border-accent-primary', 'ring-2', 'ring-accent-primary/30');
+    }
+    recordingActionId = null;
+    recordingBtn = null;
+    document.removeEventListener('keydown', handleEscapeCancel, true);
+    // Re-enable menu accelerators
+    window.postMessage({ type: '__electron_keybinds_recording_stop__' }, '*');
+  }
+
+  // Only handle Escape/Delete/Backspace locally (these don't get captured by before-input-event)
+  function handleEscapeCancel(e) {
+    if (!recordingActionId) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      stopRecording();
+      return;
+    }
+
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      var overrides = currentSettings['keybinds.overrides'] || {};
+      var newOverrides = Object.assign({}, overrides);
+      delete newOverrides[recordingActionId];
+      saveSetting('keybinds.overrides', newOverrides);
+      stopRecording();
+      renderSettingsPanel();
+      return;
+    }
+  }
+
+  // Handle captured accelerator from main process (via before-input-event)
+  function handleCapturedAccelerator(accel) {
+    if (!recordingActionId) return;
+
+    // Check for conflicts
+    var overrides = currentSettings['keybinds.overrides'] || {};
+    var conflict = null;
+    KEYBIND_ACTIONS_DATA.forEach(function(a) {
+      if (a.id === recordingActionId) return;
+      var eff = (overrides[a.id] || a.defaultAccelerator).toLowerCase();
+      if (eff === accel.toLowerCase()) conflict = a;
+    });
+
+    if (conflict) {
+      recordingBtn.innerHTML = '<span class="text-red-400 text-xs">Konflikt: ' + escapeAttr(conflict.label) + '</span>';
+      setTimeout(function() {
+        if (recordingBtn && recordingActionId) {
+          recordingBtn.innerHTML = '<span class="text-accent-primary animate-pulse">Eingabe...</span>';
+        }
+      }, 1500);
+      return;
+    }
+
+    // Save override
+    var newOverrides = Object.assign({}, overrides);
+    newOverrides[recordingActionId] = accel;
+    saveSetting('keybinds.overrides', newOverrides);
+    stopRecording();
+    renderSettingsPanel();
+  }
+
+  // Listen for captured keybinds from main process
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === '__electron_keybind_captured__') {
+      handleCapturedAccelerator(event.data.accelerator);
+    }
+  });
+
   function bindEvents(panel) {
     // Toggle switches
     var checkboxes = panel.querySelectorAll('input[type="checkbox"][data-settings-key]');
@@ -257,6 +418,54 @@ export function getSettingsInjectionScript(): string {
         if (!isNaN(val)) {
           saveSetting(input.getAttribute('data-settings-key'), val);
         }
+      });
+    });
+
+    // Quick-Nav path inputs
+    var pathInputs = panel.querySelectorAll('input[data-quicknav-path]');
+    pathInputs.forEach(function(input) {
+      input.addEventListener('change', function() {
+        var val = input.value.trim();
+        // Ensure path starts with / if not empty
+        if (val && val.charAt(0) !== '/') val = '/' + val;
+        saveSetting(input.getAttribute('data-quicknav-path'), val);
+      });
+    });
+
+    // Quick-Nav label inputs
+    var labelInputs = panel.querySelectorAll('input[data-quicknav-label]');
+    labelInputs.forEach(function(input) {
+      input.addEventListener('change', function() {
+        saveSetting(input.getAttribute('data-quicknav-label'), input.value.trim());
+      });
+    });
+
+    // Keybind buttons — start recording on click
+    var keybindBtns = panel.querySelectorAll('button[data-keybind-action]');
+    keybindBtns.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        // Stop any previous recording
+        stopRecording();
+        recordingActionId = btn.getAttribute('data-keybind-action');
+        recordingBtn = btn;
+        btn.innerHTML = '<span class="text-accent-primary animate-pulse">Eingabe...</span>';
+        btn.classList.add('border-accent-primary', 'ring-2', 'ring-accent-primary/30');
+        // Tell main process to capture keys via before-input-event
+        window.postMessage({ type: '__electron_keybinds_recording_start__' }, '*');
+        document.addEventListener('keydown', handleEscapeCancel, true);
+      });
+    });
+
+    // Keybind reset buttons
+    var resetBtns = panel.querySelectorAll('button[data-keybind-reset]');
+    resetBtns.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var actionId = btn.getAttribute('data-keybind-reset');
+        var overrides = currentSettings['keybinds.overrides'] || {};
+        var newOverrides = Object.assign({}, overrides);
+        delete newOverrides[actionId];
+        saveSetting('keybinds.overrides', newOverrides);
+        renderSettingsPanel();
       });
     });
   }
