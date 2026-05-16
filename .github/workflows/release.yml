@@ -34,6 +34,7 @@ jobs:
           cache: 'npm'
 
       - name: Sync version from tag
+        shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
@@ -76,6 +77,11 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Delete existing release if present
+        run: gh release delete "$GITHUB_REF_NAME" --yes --cleanup-tag=false || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
