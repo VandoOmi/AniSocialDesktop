@@ -16,6 +16,9 @@ sha256sums=('SKIP')
 package() {
     bsdtar -xf "${srcdir}/${pkgname}-${pkgver}.pacman" -C "${pkgdir}/"
 
+    # Remove pacman metadata files
+    rm -f "${pkgdir}"/.INSTALL "${pkgdir}"/.MTREE "${pkgdir}"/.PKGINFO "${pkgdir}"/.BUILDINFO "${pkgdir}"/.CHANGELOG
+
     # Fix permissions
     chmod -R g-w "${pkgdir}"
 }
