@@ -17,7 +17,10 @@ import windowStateKeeper from 'electron-window-state';
 import { APP_CONFIG, TRAY_ICONS, type Platform } from './types/config';
 import { IPC_CHANNELS, type NotificationPayload } from './types/ipc';
 import { initAutoUpdater } from './updater';
-import { initNotifications } from './push';
+import { initNotifications, restartPolling } from './push';
+import { initSettingsIpc } from './settings/ipc';
+import { getSetting, onSettingChanged } from './settings/store';
+import { getSettingsInjectionScript } from './settings-inject';
 
 // --- State ---
 
@@ -195,14 +198,12 @@ function createWindow(): void {
     `;
   }
 
-  // did-start-navigation fires before any page JS executes
+  // did-start-navigation fires before any page JS executes — failures are expected
+  // because the new JS context may not be ready yet. dom-ready below is the reliable fallback.
   mainWindow.webContents.on('did-start-navigation', () => {
-    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch((e) => {
-      console.error('[NotificationMock] Injection failed on did-start-navigation:', e);
-    });
-    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
-      console.error('[PushMock] Injection failed on did-start-navigation:', e);
-    });
+    mainWindow?.webContents.executeJavaScript(getNotificationMockScript()).catch(() => {});
+    mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch(() => {});
+    mainWindow?.webContents.executeJavaScript(getSettingsInjectionScript()).catch(() => {});
   });
 
   // Fallback: also inject on dom-ready in case did-start-navigation was too early
@@ -213,11 +214,20 @@ function createWindow(): void {
     mainWindow?.webContents.executeJavaScript(getPushMockScript()).catch((e) => {
       console.error('[PushMock] Injection failed on dom-ready:', e);
     });
+    mainWindow?.webContents.executeJavaScript(getSettingsInjectionScript()).catch((e) => {
+      console.error('[SettingsInject] Injection failed on dom-ready:', e);
+    });
+
+    // Apply zoom level from settings
+    const zoomLevel = getSetting('appearance.zoomLevel');
+    if (zoomLevel !== 0) {
+      mainWindow?.webContents.setZoomLevel(zoomLevel);
+    }
   });
 
-  // Minimize to tray instead of closing
+  // Minimize to tray instead of closing (respects closeToTray setting)
   mainWindow.on('close', (event) => {
-    if (!isQuitting) {
+    if (!isQuitting && getSetting('general.closeToTray')) {
       event.preventDefault();
       mainWindow?.hide();
     }
@@ -332,10 +342,13 @@ function createWindow(): void {
 // --- IPC Handlers ---
 
 ipcMain.on(IPC_CHANNELS.SHOW_NOTIFICATION, (_event, payload: NotificationPayload) => {
+  if (!getSetting('notifications.enabled')) return;
+
   const notification = new Notification({
     title: payload.title || APP_CONFIG.APP_NAME,
     body: payload.body || '',
     icon: payload.icon || path.join(__dirname, '..', 'assets', 'icon.png'),
+    silent: !getSetting('notifications.sound'),
   });
 
   notification.on('click', () => {
@@ -568,10 +581,32 @@ app.on('before-quit', () => {
   isQuitting = true;
 });
 
+// Disable hardware acceleration before app is ready if setting is off
+if (!getSetting('general.hardwareAcceleration')) {
+  app.disableHardwareAcceleration();
+}
+
 app.whenReady().then(() => {
+  initSettingsIpc();
   createWindow();
   createTray();
   initAutoUpdater();
+
+  // Apply autostart setting
+  app.setLoginItemSettings({ openAtLogin: getSetting('general.autoStart') });
+
+  // React to settings changes
+  onSettingChanged('general.autoStart', (value) => {
+    app.setLoginItemSettings({ openAtLogin: value });
+  });
+
+  onSettingChanged('appearance.zoomLevel', (value) => {
+    mainWindow?.webContents.setZoomLevel(value);
+  });
+
+  onSettingChanged('notifications.pollingIntervalSec', () => {
+    restartPolling();
+  });
 
   // Start notification polling (with WebSocket upgrade when available)
   initNotifications((title, body, badgeCount) => {
@@ -581,6 +616,7 @@ app.whenReady().then(() => {
         title,
         body,
         icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+        silent: !getSetting('notifications.sound'),
       });
 
       notification.on('click', () => {

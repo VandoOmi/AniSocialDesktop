@@ -1,8 +1,8 @@
 import { app, session } from 'electron';
 import * as https from 'https';
+import { getSetting } from './settings/store';
 
 const API_BASE = 'https://api.anisocial.de/api/v1';
-const POLL_INTERVAL_MS = 30_000; // 30 seconds
 
 interface AniNotification {
   _id: string;
@@ -140,13 +140,15 @@ async function pollNotifications(): Promise<void> {
 function startPolling(): void {
   if (pollTimer) return;
 
+  const intervalMs = getSetting('notifications.pollingIntervalSec') * 1000;
+
   // Initial poll after short delay (wait for login/cookies)
   setTimeout(() => {
     pollNotifications();
-    pollTimer = setInterval(pollNotifications, POLL_INTERVAL_MS);
+    pollTimer = setInterval(pollNotifications, intervalMs);
   }, 5000);
 
-  console.log('[Notifications] Polling started (every 30s)');
+  console.log(`[Notifications] Polling started (every ${intervalMs / 1000}s)`);
 }
 
 function stopPolling(): void {
@@ -156,8 +158,21 @@ function stopPolling(): void {
   }
 }
 
+export function restartPolling(): void {
+  stopPolling();
+  startPolling();
+}
+
 export function initNotifications(callback: OnNotificationCallback): void {
-  onNotification = callback;
+  onNotification = (title, body, count) => {
+    // Respect notifications.enabled setting (always allow badge-only updates)
+    if (title && !getSetting('notifications.enabled')) {
+      // Still update badge even if notifications are disabled
+      callback('', '', count);
+      return;
+    }
+    callback(title, body, count);
+  };
   startPolling();
 
   app.on('will-quit', () => {
