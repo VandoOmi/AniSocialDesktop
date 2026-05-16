@@ -32,6 +32,10 @@ let seenIds: Set<string> = new Set();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let isFirstPoll = true;
 
+function getUnreadCount(notifications: AniNotification[]): number {
+  return notifications.filter(n => !n.isRead).length;
+}
+
 async function getAuthToken(): Promise<string | null> {
   try {
     const allCookies = await session.defaultSession.cookies.get({ domain: '.anisocial.de' });
@@ -95,7 +99,7 @@ async function pollNotifications(): Promise<void> {
       isFirstPoll = false;
 
       // Count unread for initial badge
-      const unreadCount = notifications.filter(n => !n.isRead).length;
+      const unreadCount = getUnreadCount(notifications);
       if (unreadCount > 0 && onNotification) {
         // Only update badge, don't show notification on first poll
         onNotification('', '', unreadCount);
@@ -116,7 +120,7 @@ async function pollNotifications(): Promise<void> {
     }
 
     if (newNotifications.length > 0 && onNotification) {
-      const unreadCount = notifications.filter(x => !x.isRead).length;
+      const unreadCount = getUnreadCount(notifications);
 
       if (newNotifications.length === 1) {
         const n = newNotifications[0];
